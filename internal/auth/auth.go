@@ -32,5 +32,14 @@ func GetBearerToken(headers http.Header) (string, error) {
 	}
 
 	return split[1], nil
+}
 
+func GetAPIKey(headers http.Header) (string, error) {
+	apiKey := headers.Get("Authorization")
+	split := strings.Split(apiKey, " ")
+	if len(split) != 2 {
+		return "", errors.New("Wrong API Key provided.\n")
+	}
+
+	return split[1], nil
 }

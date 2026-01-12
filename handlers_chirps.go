@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -59,13 +60,13 @@ func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, req *http.Reques
 	}
 
 	// Auth
-	bearer, err := auth.GetBearerToken(req.Header)
+	token, err := auth.GetBearerToken(req.Header)
 	if err != nil {
 		fErr := fmt.Sprintf("Error getting bearer: %s", err)
 		respondWithText(w, 500, fErr)
 		return
 	}
-	authID, err := auth.ValidateJWT(bearer, cfg.jwt)
+	authID, err := auth.ValidateJWT(token, cfg.jwt)
 	if err != nil {
 		fErr := fmt.Sprintf("Error validating %s JWT: %s", authID.String(), err)
 		respondWithText(w, 401, fErr)
@@ -103,11 +104,30 @@ func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, req *http.Reques
 func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, req *http.Request) {
 	chirps := []outputChirp{}
 
-	dbChirps, err := cfg.db.GetChirps(req.Context())
-	if err != nil {
-		fErr := fmt.Sprintf("Error getting chirps: %s", err)
-		respondWithText(w, 500, fErr)
-		return
+	aID := req.URL.Query().Get("author_id")
+
+	var dbChirps []database.Chirp
+	if aID == "" {
+		var err error
+		dbChirps, err = cfg.db.GetChirps(req.Context())
+		if err != nil {
+			fErr := fmt.Sprintf("Error getting chirps: %s", err)
+			respondWithText(w, 500, fErr)
+			return
+		}
+	} else {
+		userID, err := uuid.Parse(aID)
+		if err != nil {
+			fErr := fmt.Sprintf("Error parsing author_id: %s", err)
+			respondWithText(w, 500, fErr)
+			return
+		}
+		dbChirps, err = cfg.db.GetChirpsUser(req.Context(), userID)
+		if err != nil {
+			fErr := fmt.Sprintf("Error getting chirps: %s", err)
+			respondWithText(w, 500, fErr)
+			return
+		}
 	}
 
 	// This feels like a terrible aproach to this problem, maybe use the SQLC option?
@@ -119,6 +139,12 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, req *http.Request)
 		chirp.CreatedAt = dbc.CreatedAt
 		chirp.UpdatedAt = dbc.UpdatedAt
 		chirps = append(chirps, chirp)
+	}
+
+	// Sort desc if ?sort=desc was provided in the request
+	sortOrder := req.URL.Query().Get("sort")
+	if sortOrder == "desc" {
+		sort.Slice(chirps, func(i, j int) bool { return chirps[i].CreatedAt.Compare(chirps[j].CreatedAt) > 0 })
 	}
 
 	respondWithJSON(w, 200, chirps)
@@ -153,4 +179,55 @@ func (cfg *apiConfig) getChirpIDHandler(w http.ResponseWriter, req *http.Request
 	chirp.UpdatedAt = dbChirp.UpdatedAt
 
 	respondWithJSON(w, 200, chirp)
+}
+
+func (cfg *apiConfig) deleteChirpIDHandler(w http.ResponseWriter, req *http.Request) {
+	// Auth
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		fErr := fmt.Sprintf("Error getting bearer: %s", err)
+		respondWithText(w, 401, fErr)
+		return
+	}
+	authID, err := auth.ValidateJWT(token, cfg.jwt)
+	if err != nil {
+		fErr := fmt.Sprintf("Error validating %s JWT: %s", authID.String(), err)
+		respondWithText(w, 401, fErr)
+		return
+	}
+
+	// Check and parse Chirp ID
+	chirpID, err := uuid.Parse(req.PathValue("chirpID"))
+	if err != nil {
+		fErr := fmt.Sprintf("Not valid Chirp ID: %s", err)
+		respondWithText(w, 500, fErr)
+		return
+	}
+
+	// Get chirp from database
+	dbChirp, err := cfg.db.GetChirp(req.Context(), chirpID)
+	if err != nil {
+		// Handle not found error
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithText(w, 404, "Chirp not found")
+			return
+		}
+		fErr := fmt.Sprintf("Error getting chirps: %s", err)
+		respondWithText(w, 500, fErr)
+		return
+	}
+
+	if authID != dbChirp.UserID {
+		respondWithText(w, 403, "Permission denied")
+		return
+	}
+
+	err = cfg.db.DeleteChirp(req.Context(), chirpID)
+	if err != nil {
+		fErr := fmt.Sprintf("Delete failed: %s", err)
+		respondWithText(w, 500, fErr)
+		return
+	}
+
+	respondWithText(w, 204, "Chirp deleted")
 }

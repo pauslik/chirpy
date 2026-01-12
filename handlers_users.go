@@ -25,13 +25,14 @@ type outputUser struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 
 type outputRefresToken struct {
 	Token string `json:"token"`
 }
 
-func (cfg *apiConfig) usersHandler(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, req *http.Request) {
 	iUser := inputUser{}
 	oUser := outputUser{}
 	// Decoding input
@@ -64,8 +65,66 @@ func (cfg *apiConfig) usersHandler(w http.ResponseWriter, req *http.Request) {
 	oUser.ID = dbUser.ID
 	oUser.CreatedAt = dbUser.CreatedAt
 	oUser.UpdatedAt = dbUser.UpdatedAt
+	oUser.IsChirpyRed = dbUser.IsChirpyRed
 
 	respondWithJSON(w, 201, oUser)
+}
+
+func (cfg *apiConfig) changeUserHandler(w http.ResponseWriter, req *http.Request) {
+	iUser := inputUser{}
+	oUser := outputUser{}
+	// Parse auth header
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		fErr := fmt.Sprintf("Access token is malformed or missing: %s", err)
+		respondWithText(w, 401, fErr)
+		return
+	}
+	// Validate user
+	authID, err := auth.ValidateJWT(token, cfg.jwt)
+	if err != nil {
+		fErr := fmt.Sprintf("Error validating %s JWT: %s", authID.String(), err)
+		respondWithText(w, 401, fErr)
+		return
+	}
+
+	// Decode input JSON
+	decoder := json.NewDecoder(req.Body)
+	err = decoder.Decode(&iUser)
+	if err != nil {
+		fErr := fmt.Sprintf("Error decoding input: %s", err)
+		respondWithText(w, 500, fErr)
+		return
+	}
+
+	// Create new hashed password
+	passHashed, err := auth.HashPassword(iUser.Password)
+	if err != nil {
+		fErr := fmt.Sprintf("Error hashing password: %s", err)
+		respondWithText(w, 500, fErr)
+		return
+	}
+
+	// Update user
+	uup := database.UpdateUserParams{
+		ID:             authID,
+		Email:          iUser.Email,
+		HashedPassword: passHashed,
+	}
+	dbUser, err := cfg.db.UpdateUser(req.Context(), uup)
+	if err != nil {
+		fErr := fmt.Sprintf("Error creating user: %s", err)
+		respondWithText(w, 500, fErr)
+		return
+	}
+
+	oUser.ID = dbUser.ID
+	oUser.CreatedAt = dbUser.CreatedAt
+	oUser.UpdatedAt = dbUser.UpdatedAt
+	oUser.Email = dbUser.Email
+	oUser.IsChirpyRed = dbUser.IsChirpyRed
+
+	respondWithJSON(w, 200, oUser)
 }
 
 func (cfg *apiConfig) loginHandler(w http.ResponseWriter, req *http.Request) {
@@ -115,6 +174,7 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, req *http.Request) {
 	oUser.ID = dbUser.ID
 	oUser.CreatedAt = dbUser.CreatedAt
 	oUser.UpdatedAt = dbUser.UpdatedAt
+	oUser.IsChirpyRed = dbUser.IsChirpyRed
 	oUser.Token = token
 	// create refresh token and save it in database, maybe there's a better way to do this?
 	refreshToken, _ := auth.MakeRefreshToken()
@@ -137,14 +197,14 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, req *http.Request) {
 func (cfg *apiConfig) refreshHandler(w http.ResponseWriter, req *http.Request) {
 	oToken := outputRefresToken{}
 
-	bearer, err := auth.GetBearerToken(req.Header)
+	token, err := auth.GetBearerToken(req.Header)
 	if err != nil {
 		fErr := fmt.Sprintf("Error getting bearer: %s", err)
 		respondWithText(w, 500, fErr)
 		return
 	}
 
-	dbRefreshToken, err := cfg.db.GetRefreshToken(req.Context(), bearer)
+	dbRefreshToken, err := cfg.db.GetRefreshToken(req.Context(), token)
 	if err != nil {
 		// Handle not found error
 		if errors.Is(err, sql.ErrNoRows) {
@@ -162,7 +222,7 @@ func (cfg *apiConfig) refreshHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// GetUserFromRefreshToken
-	dbUser, err := cfg.db.GetUserFromRefreshToken(req.Context(), bearer)
+	dbUser, err := cfg.db.GetUserFromRefreshToken(req.Context(), token)
 	if err != nil {
 		fErr := fmt.Sprintf("No user associated with refresh token: %s", err)
 		respondWithText(w, 500, fErr)
@@ -170,7 +230,7 @@ func (cfg *apiConfig) refreshHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Create new JWT
-	token, err := auth.MakeJWT(dbUser.ID, cfg.jwt)
+	token, err = auth.MakeJWT(dbUser.ID, cfg.jwt)
 	if err != nil {
 		fErr := fmt.Sprintf("Could not generate JWT token: %s", err)
 		respondWithText(w, 500, fErr)

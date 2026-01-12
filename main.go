@@ -17,6 +17,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	jwt            string
+	polka          string
 }
 
 func main() {
@@ -26,6 +27,7 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	jwtSecret := os.Getenv("JWT_SECRET")
+	polkaKey := os.Getenv("POLKA_KEY")
 
 	// Load the database
 	db, err := sql.Open("postgres", dbURL)
@@ -38,6 +40,7 @@ func main() {
 	// Save to config
 	apiCfg.db = dbQueries
 	apiCfg.jwt = jwtSecret
+	apiCfg.polka = polkaKey
 
 	// HTTP request multiplexer
 	mux := http.NewServeMux()
@@ -64,7 +67,8 @@ func main() {
 		w.Write([]byte(body))
 	})
 	// Users
-	mux.HandleFunc("POST /api/users", apiCfg.usersHandler)
+	mux.HandleFunc("POST /api/users", apiCfg.createUserHandler)
+	mux.HandleFunc("PUT /api/users", apiCfg.changeUserHandler)
 	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
 	mux.HandleFunc("POST /api/refresh", apiCfg.refreshHandler)
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
@@ -72,6 +76,9 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiCfg.createChirpHandler)
 	mux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpIDHandler)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.deleteChirpIDHandler)
+	// Polka
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.upgradeRedHandler)
 
 	// HTTP server
 	server := &http.Server{
